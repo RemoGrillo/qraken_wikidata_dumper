@@ -2,7 +2,7 @@ import { DumpConfig, DumpJob, DumpProgress } from '@/lib/types'
 import { generateJobId, chunkArray, calculateEta } from '@/lib/utils'
 import { wdqsClient } from './wdqsClient'
 import { mwApi } from './mwapi'
-import { constructR1, constructR2, constructEstimate, extractNeighbors } from './construct'
+import { constructForRadius, constructEstimate, extractNeighbors } from './construct'
 import { expandSubclasses } from './subclasses'
 import { constructPropertyMetadata, extractPropertyIds } from './propertyEnrichment'
 import * as fs from 'fs/promises'
@@ -108,88 +108,97 @@ export class DumpOrchestrator {
         message: `Estimated ~${totalEstimate} triples`
       })
       
-      // Phase D: Fetch R=1 data
-      this.updateProgress({ phase: 'fetching-r1', message: 'Fetching radius 1 data...' })
-      const neighbors = new Set<string>()
+      // Phase D: Iterative Radius Crawling
       let triplesWritten = 0
-      
-      // Open file for streaming writes
+      const visited = new Set<string>()  // Track already processed entities
       const ntStream = await fs.open(ntFile, 'w')
       
-      const instanceBatches = chunkArray(instances, BATCH_SIZE)
-      for (let i = 0; i < instanceBatches.length; i++) {
-        if (this.abortController.signal.aborted) {
-          throw new Error('Job aborted')
+      // Start with instances as entities to process
+      let currentEntities = new Set<string>(instances)
+      
+      // Process each radius level
+      for (let currentRadius = 1; currentRadius <= this.job.config.radius; currentRadius++) {
+        if (currentEntities.size === 0) {
+          this.updateProgress({ 
+            message: `No new entities to process at radius ${currentRadius}` 
+          })
+          break
         }
         
-        const batch = instanceBatches[i]
-        const query = constructR1(batch, this.job.config.language)
-        const ntriples = await wdqsClient.construct(query)
-        
-        // Write to file
-        await ntStream.write(ntriples)
-        
-        // Extract neighbors
-        const batchNeighbors = extractNeighbors(ntriples)
-        batchNeighbors.forEach(qid => neighbors.add(qid))
-        
-        // Count triples (rough estimate)
-        triplesWritten += ntriples.split('\n').filter(line => line.trim()).length
-        
-        const eta = calculateEta(
-          i + 1,
-          instanceBatches.length + (this.job.config.radius > 1 ? Math.ceil(neighbors.size / BATCH_SIZE) : 0),
-          this.job.startTime
-        )
-        
-        this.updateProgress({
-          itemsSeen: (i + 1) * BATCH_SIZE,
-          triplesWritten,
-          eta,
-          message: `Processing batch ${i + 1}/${instanceBatches.length}...`
-        })
-      }
-      
-      // Phase E: Fetch R=2 data if radius > 1
-      if (this.job.config.radius > 1 && neighbors.size > 0) {
         this.updateProgress({ 
-          phase: 'fetching-r2', 
-          message: `Fetching radius 2 data (${neighbors.size} neighbors)...`
+          phase: currentRadius === 1 ? 'fetching-r1' : 'fetching-r2', 
+          message: `Fetching radius ${currentRadius} data (${currentEntities.size} entities)...` 
         })
         
-        const neighborArray = Array.from(neighbors)
-        const neighborBatches = chunkArray(neighborArray, BATCH_SIZE)
+        const nextNeighbors = new Set<string>()
         
-        for (let i = 0; i < neighborBatches.length; i++) {
+        // Filter out already visited entities
+        const entitiesToProcess = Array.from(currentEntities).filter(qid => !visited.has(qid))
+        
+        if (entitiesToProcess.length === 0) {
+          this.updateProgress({ 
+            message: `All entities at radius ${currentRadius} already visited` 
+          })
+          continue
+        }
+        
+        // Mark as visited
+        entitiesToProcess.forEach(qid => visited.add(qid))
+        
+        // Process in batches
+        const batches = chunkArray(entitiesToProcess, BATCH_SIZE)
+        const totalBatchesUpToNow = visited.size / BATCH_SIZE
+        
+        for (let i = 0; i < batches.length; i++) {
           if (this.abortController.signal.aborted) {
             throw new Error('Job aborted')
           }
           
-          const batch = neighborBatches[i]
-          const query = constructR2(batch, this.job.config.language)
+          const batch = batches[i]
+          const query = constructForRadius(batch, this.job.config.language)
           const ntriples = await wdqsClient.construct(query)
           
           // Write to file
           await ntStream.write(ntriples)
           
+          // Extract neighbors for next radius (if not at max radius)
+          if (currentRadius < this.job.config.radius) {
+            const batchNeighbors = extractNeighbors(ntriples)
+            batchNeighbors.forEach(qid => {
+              // Only add if not already visited
+              if (!visited.has(qid)) {
+                nextNeighbors.add(qid)
+              }
+            })
+          }
+          
+          // Count triples
           triplesWritten += ntriples.split('\n').filter(line => line.trim()).length
           
-          const eta = calculateEta(
-            instanceBatches.length + i + 1,
-            instanceBatches.length + neighborBatches.length,
-            this.job.startTime
-          )
+          const progressPercent = ((visited.size / (instances.length * Math.pow(2, this.job.config.radius))) * 100).toFixed(1)
           
           this.updateProgress({
-            itemsSeen: instances.length + (i + 1) * BATCH_SIZE,
+            itemsSeen: visited.size,
             triplesWritten,
-            eta,
-            message: `Processing neighbor batch ${i + 1}/${neighborBatches.length}...`
+            message: `R${currentRadius}: Batch ${i + 1}/${batches.length} (${visited.size} entities processed, ~${progressPercent}% estimated)`
+          })
+        }
+        
+        // Prepare for next radius
+        currentEntities = nextNeighbors
+        
+        if (currentRadius < this.job.config.radius && nextNeighbors.size > 0) {
+          this.updateProgress({ 
+            message: `Found ${nextNeighbors.size} new neighbors for radius ${currentRadius + 1}` 
           })
         }
       }
       
       await ntStream.close()
+      
+      this.updateProgress({ 
+        message: `Completed radius crawling: ${visited.size} unique entities, ${triplesWritten} triples` 
+      })
       
       // Phase E: Fetch property metadata (if enabled)
       if (this.job.config.includePropertyMetadata !== false) {  // Default to true

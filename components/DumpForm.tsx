@@ -11,8 +11,8 @@ interface DumpFormProps {
 export default function DumpForm({ onSubmit }: DumpFormProps) {
   const [config, setConfig] = useState<DumpConfig>({
     classQid: 'Q3305213', // Default: painting
-    radius: 2,
-    maxInstances: 1000,
+    radius: 4,
+    maxInstances: 1,
     language: 'en',
     includeSubclasses: true,
     includePropertyMetadata: true, // Default to true for better dumps
@@ -116,12 +116,14 @@ export default function DumpForm({ onSubmit }: DumpFormProps) {
           }}
           className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
         >
-          <option value={1}>1 (Direct properties only)</option>
-          <option value={2}>2 (Include neighbor properties)</option>
-          <option value={3}>3 (Two hops from instances)</option>
+          <option value={1}>1 (Direct properties of instances)</option>
+          <option value={2}>2 (Properties of direct neighbors)</option>
+          <option value={3}>3 (Properties of 2-hop neighbors)</option>
+          <option value={4}>4 (Properties of 3-hop neighbors)</option>
+          <option value={5}>5 (Properties of 4-hop neighbors)</option>
         </select>
         <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          How many hops from the instances to include in the dump
+          How many hops from the instances to explore. Each radius fetches properties FROM entities, not instances OF classes.
         </p>
       </div>
 

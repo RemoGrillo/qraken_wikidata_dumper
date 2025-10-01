@@ -62,7 +62,11 @@ function getNodeGroup(uri: string): string {
 export async function POST(request: NextRequest) {
   try {
     const body = await request.json()
-    const { directory, limit = 500 } = body
+    const { 
+      directory, 
+      limit = 1500, 
+      maxDeadEndConnections = 10 
+    } = body
     
     if (!directory) {
       return NextResponse.json(
@@ -139,12 +143,8 @@ export async function POST(request: NextRequest) {
       throw new Error('Could not parse RDF data')
     }
     
-    // Build graph data
-    const nodes = new Map<string, GraphNode>()
-    const edges: GraphEdge[] = []
+    // Collect labels first
     const labels = new Map<string, string>()
-    
-    // First pass: collect labels
     for (const quad of store.match(
       null,
       namedNode('http://www.w3.org/2000/01/rdf-schema#label'),
@@ -156,14 +156,20 @@ export async function POST(request: NextRequest) {
       labels.set(subject, object)
     }
     
-    // Second pass: build graph (limited to prevent overwhelming the UI)
-    let quadCount = 0
+    // Build complete graph structure for analysis
+    const allNodes = new Map<string, GraphNode>()
+    const allEdges: GraphEdge[] = []
+    const nodeConnections = new Map<string, Set<string>>() // Track connections per node
+    const incomingConnections = new Map<string, Set<string>>() // Track incoming edges
+    const outgoingConnections = new Map<string, Set<string>>() // Track outgoing edges
+    
+    let tempEdgeId = 0
+    
+    // Build full graph structure
     for (const quad of store.match(null, null, null, null)) {
-      if (quadCount >= limit) break
-      
       const subjectId = quad.subject.value
       const predicateId = quad.predicate.value
-      const objectId = quad.object.value
+      let objectId = quad.object.value
       
       // Skip label predicates in graph (we already extracted them)
       if (predicateId === 'http://www.w3.org/2000/01/rdf-schema#label') {
@@ -171,8 +177,8 @@ export async function POST(request: NextRequest) {
       }
       
       // Add subject node
-      if (!nodes.has(subjectId)) {
-        nodes.set(subjectId, {
+      if (!allNodes.has(subjectId)) {
+        allNodes.set(subjectId, {
           id: subjectId,
           label: labels.get(subjectId) || getLabel(subjectId),
           type: 'entity',
@@ -180,10 +186,10 @@ export async function POST(request: NextRequest) {
         })
       }
       
-      // Add object node
+      // Handle object node
       if (quad.object.termType === 'NamedNode') {
-        if (!nodes.has(objectId)) {
-          nodes.set(objectId, {
+        if (!allNodes.has(objectId)) {
+          allNodes.set(objectId, {
             id: objectId,
             label: labels.get(objectId) || getLabel(objectId),
             type: 'entity',
@@ -192,56 +198,134 @@ export async function POST(request: NextRequest) {
         }
       } else {
         // Literal node
-        const literalId = `literal_${quadCount}`
-        if (!nodes.has(literalId)) {
+        objectId = `literal_${tempEdgeId}`
+        if (!allNodes.has(objectId)) {
           let literalLabel = quad.object.value
           if (literalLabel.length > 50) {
             literalLabel = literalLabel.substring(0, 50) + '...'
           }
-          nodes.set(literalId, {
-            id: literalId,
+          allNodes.set(objectId, {
+            id: objectId,
             label: literalLabel,
             type: 'literal',
             group: 'literal',
           })
         }
-        // Update objectId for edge
-        const actualObjectId = literalId
-        
-        // Add edge
-        edges.push({
-          id: `edge_${quadCount}`,
-          source: subjectId,
-          target: actualObjectId,
-          label: getLabel(predicateId),
-          predicate: predicateId,
-        })
-        
-        quadCount++
-        continue
       }
       
-      // Add edge for named nodes
-      edges.push({
-        id: `edge_${quadCount}`,
+      // Add edge
+      allEdges.push({
+        id: `edge_${tempEdgeId++}`,
         source: subjectId,
         target: objectId,
         label: getLabel(predicateId),
         predicate: predicateId,
       })
       
-      quadCount++
+      // Track connections
+      if (!nodeConnections.has(subjectId)) nodeConnections.set(subjectId, new Set())
+      if (!nodeConnections.has(objectId)) nodeConnections.set(objectId, new Set())
+      nodeConnections.get(subjectId)!.add(objectId)
+      nodeConnections.get(objectId)!.add(subjectId)
+      
+      if (!outgoingConnections.has(subjectId)) outgoingConnections.set(subjectId, new Set())
+      outgoingConnections.get(subjectId)!.add(objectId)
+      
+      if (!incomingConnections.has(objectId)) incomingConnections.set(objectId, new Set())
+      incomingConnections.get(objectId)!.add(subjectId)
+    }
+    
+    // Identify dead-end nodes (nodes with only one connection)
+    const deadEndNodes = new Set<string>()
+    for (const [nodeId, connections] of nodeConnections.entries()) {
+      if (connections.size === 1) {
+        deadEndNodes.add(nodeId)
+      }
+    }
+    
+    // Prune edges intelligently
+    const prunedEdges: GraphEdge[] = []
+    const prunedNodes = new Set<string>()
+    const deadEndConnectionsPerNode = new Map<string, number>()
+    
+    // Priority predicates that should always be included
+    const priorityPredicates = new Set([
+      'http://www.w3.org/1999/02/22-rdf-syntax-ns#type',
+      'http://www.wikidata.org/prop/direct/P31', // instance of
+      'http://www.wikidata.org/prop/direct/P279', // subclass of
+    ])
+    
+    for (const edge of allEdges) {
+      const isSourceDeadEnd = deadEndNodes.has(edge.source)
+      const isTargetDeadEnd = deadEndNodes.has(edge.target)
+      const isPriority = priorityPredicates.has(edge.predicate)
+      
+      // Always include priority predicates
+      if (isPriority) {
+        prunedEdges.push(edge)
+        prunedNodes.add(edge.source)
+        prunedNodes.add(edge.target)
+        continue
+      }
+      
+      // If both nodes are well-connected, always include
+      if (!isSourceDeadEnd && !isTargetDeadEnd) {
+        prunedEdges.push(edge)
+        prunedNodes.add(edge.source)
+        prunedNodes.add(edge.target)
+        continue
+      }
+      
+      // If target is a dead end, check limits
+      if (isTargetDeadEnd) {
+        const currentDeadEnds = deadEndConnectionsPerNode.get(edge.source) || 0
+        if (currentDeadEnds < maxDeadEndConnections) {
+          prunedEdges.push(edge)
+          prunedNodes.add(edge.source)
+          prunedNodes.add(edge.target)
+          deadEndConnectionsPerNode.set(edge.source, currentDeadEnds + 1)
+        }
+      } else {
+        // Source is dead end but target is not - include it
+        prunedEdges.push(edge)
+        prunedNodes.add(edge.source)
+        prunedNodes.add(edge.target)
+      }
+      
+      // Stop if we've reached the limit
+      if (prunedEdges.length >= limit) break
+    }
+    
+    // Build final graph data
+    const finalNodes: GraphNode[] = []
+    for (const nodeId of prunedNodes) {
+      if (allNodes.has(nodeId)) {
+        finalNodes.push(allNodes.get(nodeId)!)
+      }
     }
     
     const graphData: GraphData = {
-      nodes: Array.from(nodes.values()),
-      edges,
+      nodes: finalNodes,
+      edges: prunedEdges.slice(0, limit),
     }
+    
+    // Calculate pruning statistics
+    const totalDeadEnds = deadEndNodes.size
+    const prunedDeadEnds = Array.from(prunedNodes).filter(n => deadEndNodes.has(n)).length
+    const prunedOutDeadEnds = totalDeadEnds - prunedDeadEnds
     
     return NextResponse.json({
       graph: graphData,
       totalQuads: store.size,
-      displayedQuads: quadCount,
+      displayedQuads: prunedEdges.length,
+      pruningStats: {
+        totalNodes: allNodes.size,
+        totalEdges: allEdges.length,
+        totalDeadEnds,
+        prunedDeadEnds,
+        prunedOutDeadEnds,
+        maxDeadEndConnections
+      }
     })
   } catch (error) {
     console.error('Failed to visualize TTL:', error)

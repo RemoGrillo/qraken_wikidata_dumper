@@ -62,6 +62,12 @@ export default function ClassSearchModal({
   }, [query])
 
   const handleSearch = async (searchQuery: string) => {
+    // Don't search if query is empty
+    if (!searchQuery.trim()) {
+      setResults([])
+      return
+    }
+    
     setLoading(true)
     setError(null)
 

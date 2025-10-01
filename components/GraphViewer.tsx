@@ -36,7 +36,18 @@ export default function GraphViewer({ directory, onClose }: GraphViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [graphInfo, setGraphInfo] = useState<{ totalQuads: number; displayedQuads: number } | null>(null)
+  const [graphInfo, setGraphInfo] = useState<{ 
+    totalQuads: number
+    displayedQuads: number
+    pruningStats?: {
+      totalNodes: number
+      totalEdges: number
+      totalDeadEnds: number
+      prunedDeadEnds: number
+      prunedOutDeadEnds: number
+      maxDeadEndConnections: number
+    }
+  } | null>(null)
   const cyRef = useRef<cytoscape.Core | null>(null)
 
   useEffect(() => {
@@ -59,7 +70,7 @@ export default function GraphViewer({ directory, onClose }: GraphViewerProps) {
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ directory, limit: 500 }),
+        body: JSON.stringify({ directory, limit: 1500 }),
       })
       
       if (!response.ok) {
@@ -67,7 +78,11 @@ export default function GraphViewer({ directory, onClose }: GraphViewerProps) {
       }
       
       const data = await response.json()
-      setGraphInfo({ totalQuads: data.totalQuads, displayedQuads: data.displayedQuads })
+      setGraphInfo({ 
+        totalQuads: data.totalQuads, 
+        displayedQuads: data.displayedQuads,
+        pruningStats: data.pruningStats
+      })
       
       if (containerRef.current) {
         renderGraph(data.graph)
@@ -205,9 +220,16 @@ export default function GraphViewer({ directory, onClose }: GraphViewerProps) {
               RDF Graph Visualization
             </h2>
             {graphInfo && (
-              <p className="text-sm text-gray-600 dark:text-gray-400 mt-1">
-                Showing {graphInfo.displayedQuads} of {graphInfo.totalQuads} triples
-              </p>
+              <div className="text-sm text-gray-600 dark:text-gray-400 mt-1">
+                <p>Showing {graphInfo.displayedQuads} of {graphInfo.totalQuads} triples</p>
+                {graphInfo.pruningStats && (
+                  <p className="text-xs mt-1">
+                    Pruned {graphInfo.pruningStats.prunedOutDeadEnds} dead-end nodes 
+                    (kept {graphInfo.pruningStats.prunedDeadEnds} of {graphInfo.pruningStats.totalDeadEnds}, 
+                    max {graphInfo.pruningStats.maxDeadEndConnections} per node)
+                  </p>
+                )}
+              </div>
             )}
           </div>
           <button
