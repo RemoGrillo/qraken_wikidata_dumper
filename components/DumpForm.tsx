@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { DumpConfig } from '@/lib/types'
+import ClassSearchModal from './ClassSearchModal'
 
 interface DumpFormProps {
   onSubmit: (config: DumpConfig) => void
@@ -17,6 +18,9 @@ export default function DumpForm({ onSubmit }: DumpFormProps) {
     includePropertyMetadata: true, // Default to true for better dumps
   })
   const [isSubmitting, setIsSubmitting] = useState(false)
+  const [isSearchOpen, setIsSearchOpen] = useState(false)
+  const [selectedClassLabel, setSelectedClassLabel] = useState<string>('painting')
+  const [searchQuery, setSearchQuery] = useState('')
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -29,26 +33,75 @@ export default function DumpForm({ onSubmit }: DumpFormProps) {
     }
   }
 
+  const handleClassSelect = (qid: string, label: string) => {
+    setConfig({ ...config, classQid: qid })
+    setSelectedClassLabel(label)
+  }
+
+  const handleSearchKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter') {
+      e.preventDefault()
+      setIsSearchOpen(true)
+    }
+  }
+
   return (
-    <form onSubmit={handleSubmit} className="space-y-6">
-      <div>
-        <label htmlFor="classQid" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-          Class QID
-        </label>
-        <input
-          type="text"
-          id="classQid"
-          value={config.classQid}
-          onChange={(e) => setConfig({ ...config, classQid: e.target.value })}
-          pattern="Q\d+"
-          required
-          className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
-          placeholder="e.g., Q3305213 (painting)"
-        />
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          The Wikidata QID of the class to dump (e.g., Q3305213 for painting)
-        </p>
-      </div>
+    <>
+      <form onSubmit={handleSubmit} className="space-y-6">
+        <div>
+          <label htmlFor="classSearch" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
+            Class
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              id="classSearch"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              placeholder="Search for a class (e.g., painting, book, person...)"
+              className="w-full px-3 py-2 pr-10 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent dark:bg-gray-700 dark:text-white"
+            />
+            <button
+              type="button"
+              onClick={() => setIsSearchOpen(true)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 p-1 hover:bg-gray-100 dark:hover:bg-gray-600 rounded transition-colors"
+            >
+              <svg className="w-5 h-5 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+            </button>
+          </div>
+          
+          {config.classQid && (
+            <div className="mt-2 p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+              <div className="flex items-center justify-between">
+                <div>
+                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                    Selected: {selectedClassLabel}
+                  </span>
+                  <span className="ml-2 text-xs text-gray-500 dark:text-gray-400">
+                    ({config.classQid})
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSearchQuery('')
+                    setIsSearchOpen(true)
+                  }}
+                  className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                >
+                  Change
+                </button>
+              </div>
+            </div>
+          )}
+          
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            Select a Wikidata class to create a dump for
+          </p>
+        </div>
 
       <div>
         <label htmlFor="radius" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
@@ -157,5 +210,13 @@ export default function DumpForm({ onSubmit }: DumpFormProps) {
         {isSubmitting ? 'Starting...' : 'Start Dump'}
       </button>
     </form>
+    
+    <ClassSearchModal
+      isOpen={isSearchOpen}
+      onClose={() => setIsSearchOpen(false)}
+      onSelect={handleClassSelect}
+      initialQuery={searchQuery}
+    />
+  </>
   )
 }
