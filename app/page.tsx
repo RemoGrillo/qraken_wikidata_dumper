@@ -70,8 +70,7 @@ export default function Home() {
                   Wikidata Radius Dumper
                 </h1>
                 <p className="text-lg text-gray-600 dark:text-gray-300 max-w-2xl">
-                  Extract RDF data from Wikidata with configurable radius-based crawling. 
-                  Safe, efficient, and respects all API limits.
+                  Extract RDF data from Wikidata with configurable radius-based crawling.
                 </p>
               </div>
               <div className="ml-8">
